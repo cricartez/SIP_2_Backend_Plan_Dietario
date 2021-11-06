@@ -1,15 +1,17 @@
 const express = require('express');
 const mysql = require('mysql');
 const bodyParser = require('body-parser');
-const e = require('express');
 const PORT = process.env.PORT || 3050;
+
+const planesDietarioUtils = require('./src/planes_dietarios');
+const e = require('express');
 
 const app = express();
 app.use(bodyParser.json());
 
 var connection = mysql.createConnection({
     host:"localhost",
-    database:"sip_2",
+    database:"sip_2_kenobi",
     user:"root",
     password:"root"
 });
@@ -204,8 +206,8 @@ app.delete('/recetas/:id', (req, res) =>{
     })
 })
 
-//plan semanal
-app.get('/plan',(req,res) =>{
+//plan diario
+app.get('/generate_plan_diario',(req,res) =>{
     let aptoCeliaco = false;
     let aptoDiabetico = false
     let aptoDiabetico1 = false
@@ -243,26 +245,28 @@ app.get('/plan',(req,res) =>{
     let sqlRecetas = ""
     let sqlColaciones = ""
     let sqlBebidas = ""
+    let sqlInfoNutricional = "SELECT * FROM infonutricional"
+    let sqlProductosGramosUnidad = "SELECT * FROM productos_gramos_x_unidad"
 
     if(aptoCeliaco && aptoDiabetico){
-        sqlRecetas = `SELECT * FROM recetas WHERE apto_celiaco=${aptoCeliaco} AND apto_diabetico=${aptoDiabetico}`
-        sqlBebidas = `SELECT * FROM bebidas WHERE apto_celiaco=${aptoCeliaco} AND apto_diabetico=${aptoDiabetico}`
-        sqlColaciones = `SELECT * FROM productos WHERE colacion=true AND apto_celiaco=${aptoCeliaco} AND apto_diabetico=${aptoDiabetico}`
+        sqlRecetas = `SELECT * FROM platos WHERE Celiquia=${aptoCeliaco} AND Tipo1=${aptoDiabetico}`
+        sqlBebidas = `SELECT * FROM productos WHERE Celiquia=${aptoCeliaco} AND Tipo1=${aptoDiabetico} AND Tipo_Producto = 'Bebidas'`
+        sqlColaciones = `SELECT * FROM productos WHERE Celiquia=${aptoCeliaco} AND Tipo1=${aptoDiabetico} AND Tipo_Comida = 'Colación'`
     } else {
         if(aptoCeliaco){
-            sqlRecetas = `SELECT * FROM recetas WHERE apto_celiaco=${aptoCeliaco}`
-            sqlBebidas = `SELECT * FROM bebidas WHERE apto_celiaco=${aptoCeliaco}`
-            sqlColaciones = `SELECT * FROM productos WHERE apto_celiaco=${aptoCeliaco} AND colacion=true`
+            sqlRecetas = `SELECT * FROM platos WHERE Celiquia=${aptoCeliaco}`
+            sqlBebidas = `SELECT * FROM productos WHERE Tipo_Producto = 'Bebidas' AND Celiquia=${aptoCeliaco}`
+            sqlColaciones = `SELECT * FROM productos WHERE Celiquia=${aptoCeliaco} AND Tipo_Comida='Colación'`
         } else{
             if(aptoDiabetico){
-                sqlRecetas = `SELECT * FROM recetas WHERE apto_diabetico=${aptoDiabetico}`
-                sqlBebidas = `SELECT * FROM bebidas WHERE apto_diabetico=${aptoDiabetico}`
-                sqlColaciones = `SELECT * FROM productos WHERE apto_diabetico=${aptoDiabetico} AND colacion=true`
+                sqlRecetas = `SELECT * FROM platos WHERE Tipo1=${aptoDiabetico}`
+                sqlBebidas = `SELECT * FROM productos WHERE Tipo1=${aptoDiabetico} AND Tipo_Producto = 'Bebidas'`
+                sqlColaciones = `SELECT * FROM productos WHERE Tipo1=${aptoDiabetico} AND Tipo_Comida='Colación'`
             } else {
                 if(aptoObesidad){
-                    sqlRecetas = `SELECT * FROM recetas`
-                    sqlBebidas = `SELECT * FROM bebidas`
-                    sqlColaciones = `SELECT * FROM productos WHERE colacion=true`
+                    sqlRecetas = `SELECT * FROM platos`
+                    sqlBebidas = `SELECT * FROM productos WHERE Tipo_Producto = 'Bebidas'`
+                    sqlColaciones = `SELECT * FROM productos WHERE Tipo_Comida='Colación'`
                 }
             }
         }
@@ -271,923 +275,46 @@ app.get('/plan',(req,res) =>{
     let bebidasDesayunoMeriendas = [];
     let bebidasAlmuerzoCenas = [];
     let colaciones = [];
+    let informacionNutricional = [];
+    let gramosUnidadProducto = [];
     console.log("Query bebidas:",sqlBebidas)
     console.log("Query colaciones:",sqlColaciones)
     console.log("Query recetas:",sqlRecetas)
 
     if(sqlBebidas != "" && sqlColaciones != "" && sqlRecetas != ""){
+        connection.query(sqlInfoNutricional,(error, results) =>{
+            if(error) throw error;
+            if(results != undefined && results.length > 0){
+                informacionNutricional = results
+            }
+        })
+
+        connection.query(sqlProductosGramosUnidad,(error, results) =>{
+            if(error) throw error;
+            if(results != undefined && results.length > 0){
+                gramosUnidadProducto = results
+            }
+        })
+
         connection.query(sqlBebidas,(error, results) =>{
             if(error) throw error;
             if(results != undefined && results.length > 0){
-                bebidasDesayunoMeriendas = results.filter((e) => e.tipo === "Desayuno/Merienda")
-                bebidasAlmuerzoCenas = results.filter((e) => e.tipo === "Almuerzo/Cena")
+                bebidasDesayunoMeriendas = results.filter((e) => e.Tipo_Comida === "Desayuno/Merienda")
+                bebidasAlmuerzoCenas = results.filter((e) => e.Tipo_Comida === "Almuerzo/Cena")
             }
         })
-    
         connection.query(sqlColaciones,(error, results) =>{
             colaciones = results
         }) 
     
         connection.query(sqlRecetas,(error, results) =>{
-            const desayunoPorcentaje = 0.2
-            const colacionPorcentaje = 0.1
-            const almuerzoPorcentaje = 0.3
-            const meriendaPorcentaje = 0.1
-            const cenaPorcentaje = 0.3
-
-            let maxKcalDiarios = 2000
-            let maxHcDiarios = 200
-
-            if(aptoObesidad){
-                maxKcalDiarios = 1700
-            }
-
-            //Cant. Carbs en una dieta de 2000kl diarios (1Carb = 4kcal):
-            //Obesidad:             <10%    = 50g
-            //Obesidad:             10%-25% = 50g-120g
-            //Celiaquia/Normal:     25%-40% = 125g-200g
-            //Otros/Más act.física: 40%-50% = 200g-250g 
-
-            //Si es aptoObesidad, entonces se aplica la menor cantidad de carbs por dia
-            if(aptoObesidad){
-                //Ver si usar 50g y tener más opciones de MERIENDAS que está dando error, o mantener 90
-                maxHcDiarios = 90
-            } else {
-                if(aptoDiabetico){
-                    maxHcDiarios = 125
-                } else {
-                    if(aptoCeliaco){
-                        maxHcDiarios = 200
-                    }
-                }
-            }
-
-            //Carbs por Comida
-            const maxHcDesayuno = maxHcDiarios * desayunoPorcentaje
-            const maxHcColacion = maxHcDiarios * colacionPorcentaje
-            const maxHcAlmuerzo = maxHcDiarios * almuerzoPorcentaje
-            const maxHcMerienda = maxHcDiarios * meriendaPorcentaje
-            const maxHcCena = maxHcDiarios * cenaPorcentaje
-
-            //Kcal por comida
-            const maxKcalDesayuno = maxKcalDiarios * desayunoPorcentaje
-            const maxKcalColacion = maxKcalDiarios * colacionPorcentaje
-            const maxKcalAlmuerzo = maxKcalDiarios * almuerzoPorcentaje
-            //DESCOMENTAR CUANDO HAYA MAS OPCIONES DE MERIENDAS CON MENOS DE 200K o SUBIR a 2500KCAL
-            // const maxKcalMerienda = 200
-            const maxKcalMerienda = maxKcalDiarios * meriendaPorcentaje
-            const maxKcalCena = maxKcalDiarios * cenaPorcentaje
-    
-     
-    
             //TODO: 
             //Ver opciones de postre.
             //En caso de resto, sumar una porción más de almuerzo/cena
     
             if(error) throw error;
-    
-            if(results != undefined && results.length > 0){
-                let desayunosMeriendas = results.filter((e) => e.tipo === 'Desayuno/Merienda')
-                let almuerzosCenas = results.filter((e) => e.tipo === 'Almuerzo/Cena')
-    
-                /////////////////////////////////////////////////////////////////////////////////////
-                ///////////////////////////////// Desayuno //////////////////////////////////////////
-                /////////////////////////////////////////////////////////////////////////////////////
-                let desayuno = {
-                    id:0,
-                    type:"Desayuno",
-                    maxKcal: maxKcalDesayuno,
-                    maxHC: maxHcDesayuno,
-                    kcal: 0,
-                    hc: 0,
-                    receta:{
-                        descripcion:"",
-                        cantidades:0,
-                        kcal_unidad:0,
-                        hc_unidad:0,
-                        url_imagen:""
-                    },
-                    bebida:{
-                        descripcion:"",
-                        cantidades:1,
-                        kcal_unidad:0,
-                        hc_unidad:0
-                    },
-                    extra:{
-                        descripcion:"",
-                        cantidades:0,
-                        kcal_unidad:0,
-                        hc_unidad:0
-                    }
-                }
-    
-                //Estrategia en las comidas:
-                // Primero se elige una receta.
-                // Luego una bebida
-                // Si queda resto de calorias, se elige otra porción de la misma receta
-                let desayunoIdx = -1
-                while(desayuno.kcal === 0){
-                    desayunoIdx = Math.floor(Math.random()*desayunosMeriendas.length)
-                    let desayunoElegido = desayunosMeriendas[desayunoIdx]
-                    let kcalPorCantidad = (desayunoElegido.total_kcal / desayunoElegido.rendimiento)
-                    let hcPorCantidad = (desayunoElegido.total_hc / desayunoElegido.rendimiento)
-    
-                    if(kcalPorCantidad < maxKcalDesayuno){
-                        let elegirComida = false
-                        if(aptoDiabetico){
-                            if(hcPorCantidad < maxHcDesayuno){
-                                elegirComida = true
-                            }
-                        } else {
-                            elegirComida = true
-                        }
-    
-                        if(elegirComida){
-                            desayuno.receta.descripcion = desayunoElegido.descripcion
-                            desayuno.receta.kcal_unidad = kcalPorCantidad
-                            desayuno.receta.hc_unidad = hcPorCantidad
-                            desayuno.kcal += kcalPorCantidad
-                            desayuno.receta.cantidades++
-                            desayuno.receta.url_imagen = desayunoElegido.url_imagen
-                            desayuno.hc += (desayunoElegido.total_hc / desayunoElegido.rendimiento)
-            
-                            let bebidaIdx = Math.floor(Math.random()*bebidasDesayunoMeriendas.length)
-                            let bebida = bebidasDesayunoMeriendas[bebidaIdx]
-                            desayuno.bebida.descripcion = bebida.descripcion
-                            desayuno.bebida.hc_unidad = bebida.hc
-                            desayuno.bebida.kcal_unidad = bebida.kcal
-                            desayuno.kcal += bebida.kcal
-                            desayuno.hc += bebida.hc
-    
-                            let elegirOtraPorcion = false
-                            if((desayuno.kcal + kcalPorCantidad) < maxKcalDesayuno){
-                                if(aptoDiabetico){
-                                    if(desayuno.hc + hcPorCantidad < maxHcDesayuno){
-                                        elegirOtraPorcion = true
-                                    }                                
-                                } else {
-                                    elegirOtraPorcion = true
-                                }
-                            }
-            
-                            while(elegirOtraPorcion){
-                                elegirOtraPorcion = false
-                                desayuno.kcal += kcalPorCantidad
-                                desayuno.hc += hcPorCantidad
-                                desayuno.receta.cantidades++
-    
-                                if((desayuno.kcal + kcalPorCantidad) < maxKcalDesayuno){
-                                    if(aptoDiabetico){
-                                        if(desayuno.hc + hcPorCantidad < maxHcDesayuno){
-                                            elegirOtraPorcion = true
-                                        }                                
-                                    } else{
-                                        elegirOtraPorcion = true
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                //Si la cantidad de kcal o HC está por debajo de un 80%
-                //elijo algo de colación para sumar más kcal/hc y completar mejor las cantidades diarias
-                let elegirExtra = false
-                if(desayuno.kcal*100/maxKcalDesayuno < 80){
-                    if(aptoDiabetico){
-                        if(desayuno.hc*100/maxHcDesayuno < 80){
-                            elegirExtra = true
-                        }
-                    } else {
-                        elegirExtra = true
-                    }
-                }
-
-                //Mientras se siga cumpliendo que no se alcanza al menos el 80% o alguna otra condiciones, sigo agregando extra
-                if(elegirExtra){
-                    elegirExtra = false
-                    let extraIdx = Math.floor(Math.random()*colaciones.length)
-                    let extraElegido = colaciones[extraIdx]
-                    let extraValido = false
-                    let kcalPorCantidadExtra = extraElegido.kcal * extraElegido.gr_unidad_media / 100
-                    let hcPorCantidadExtra = extraElegido.hc * extraElegido.gr_unidad_media / 100
-
-                    if(desayuno.kcal + kcalPorCantidadExtra < maxKcalDesayuno){
-                        if(aptoDiabetico){
-                            if(desayuno.hc + hcPorCantidadExtra < maxHcDesayuno){
-                                extraValido = true
-                            }
-                        }else{
-                            extraValido = true
-                        }
-                    }
-
-                    //Elijo la colación extra
-                    if(extraValido){
-                        desayuno.extra.descripcion = extraElegido.descripcion
-                        desayuno.extra.kcal_unidad = kcalPorCantidadExtra
-                        desayuno.extra.hc_unidad = hcPorCantidadExtra
-
-                        while(extraValido){
-                            extraValido = false
-                            desayuno.extra.cantidades++
-                            desayuno.kcal += kcalPorCantidadExtra
-                            desayuno.hc += hcPorCantidadExtra
-
-                            if(desayuno.kcal*100/maxKcalDesayuno < 80){
-                                if(aptoDiabetico){
-                                    if(desayuno.hc*100/maxHcDesayuno < 80){
-                                        elegirExtra = true
-                                    }
-                                } else {
-                                    elegirExtra = true
-                                }
-                            }
-
-                            //Todavia se cumple la condición del 80%, 
-                            //verifico si puedo elegir de nuevo otra porción de extra
-                            if(elegirExtra){
-                                if(desayuno.kcal + kcalPorCantidadExtra < maxKcalDesayuno){
-                                    if(aptoDiabetico){
-                                        if(desayuno.hc + hcPorCantidadExtra < maxHcDesayuno){
-                                            extraValido = true
-                                        }
-                                    }else{
-                                        extraValido = true
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                desayunosMeriendas.splice(desayunoIdx,1)
-                console.log("desayuno elegido!")
-
-                /////////////////////////////////////////////////////////////////////////////////////
-                ///////////////////////////////// Colación //////////////////////////////////////////
-                /////////////////////////////////////////////////////////////////////////////////////
-                let colacion = {
-                    id:1,
-                    type:"Colación",
-                    maxKcal: maxKcalColacion,
-                    maxHC: maxHcColacion,
-                    kcal:0,
-                    hc: 0,
-                    receta:{
-                        descripcion:"",
-                        cantidades:0,
-                    },
-                    bebida:{
-                        descripcion:"",
-                        cantidades: 1
-                    },
-                    extra:{
-                        descripcion:"",
-                        cantidades:0,
-                        kcal_unidad:0,
-                        hc_unidad:0
-                    }
-                }
-                let colacionIdx = -1
-
-                //Selección de alimento principal
-                while(colacion.kcal === 0){
-                    colacionIdx = Math.floor(Math.random()*colaciones.length)
-                    let colacionElegido = colaciones[colacionIdx]
-                    kcalPorCantidad = colacionElegido.kcal * colacionElegido.gr_unidad_media /100
-                    let hcPorCantidad = colacionElegido.hc * colacionElegido.gr_unidad_media / 100
-                    
-                    if(kcalPorCantidad < maxKcalColacion){
-                        let elegirComida = false
-                        if(aptoDiabetico){
-                            if(hcPorCantidad < maxHcColacion){
-                                elegirComida = true
-                            }
-                        } else {
-                            elegirComida = true
-                        }
-                        if(elegirComida){
-                            colacion.receta.descripcion = colacionElegido.descripcion;
-                            colacion.kcal += kcalPorCantidad
-                            colacion.receta.url_imagen = colacionElegido.url_imagen
-                            colacion.receta.cantidades++
-                            colacion.hc += hcPorCantidad
-            
-                            let bebidaIdx = Math.floor(Math.random()*bebidasDesayunoMeriendas.length)
-                            let bebida = bebidasDesayunoMeriendas[bebidaIdx]
-                            colacion.bebida.descripcion = bebida.descripcion
-                            colacion.kcal += bebida.kcal
-                            colacion.hc += bebida.hc
-    
-                            let elegirOtraPorcion = false
-                            if((colacion.kcal + kcalPorCantidad) < maxKcalColacion){
-                                if(aptoDiabetico){
-                                    if(colacion.hc + hcPorCantidad < maxHcColacion){
-                                        elegirOtraPorcion = true
-                                    }                                
-                                }
-                            }
-            
-                            while(elegirOtraPorcion){
-                                elegirOtraPorcion = false
-                                colacion.kcal += kcalPorCantidad
-                                if(aptoDiabetico){
-                                    colacion.hc += (colacionElegido.hc * colacionElegido.gr_unidad_media /100)
-                                }
-                                colacion.receta.cantidades++
-    
-                                if((colacion.kcal + kcalPorCantidad) < maxKcalColacion){
-                                    if(aptoDiabetico){
-                                        if(colacion.hc + colacionElegido.hc < maxHcColacion){
-                                            elegirOtraPorcion = true
-                                        }                                
-                                    } else {
-                                        elegirOtraPorcion = true
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                //Selección de alimento extra
-
-                //Si la cantidad de kcal o HC está por debajo de un 80%
-                //elijo algo de colación para sumar más kcal/hc y completar mejor las cantidades diarias
-                elegirExtra = false
-                if(colacion.kcal*100/maxKcalColacion < 80){
-                    if(aptoDiabetico){
-                        if(colacion.hc*100/maxHcColacion < 80){
-                            elegirExtra = true
-                        }
-                    } else {
-                        elegirExtra = true
-                    }
-                }
-
-                //Mientras se siga cumpliendo que no se alcanza al menos el 80% o alguna otra condiciones, sigo agregando extra
-                if(elegirExtra){
-                    elegirExtra = false
-                    let extraIdx = Math.floor(Math.random()*colaciones.length)
-                    let extraElegido = colaciones[extraIdx]
-                    let extraValido = false
-                    let kcalPorCantidadExtra = extraElegido.kcal * extraElegido.gr_unidad_media / 100
-                    let hcPorCantidadExtra = extraElegido.hc * extraElegido.gr_unidad_media / 100
-
-                    if(colacion.kcal + kcalPorCantidadExtra < maxKcalColacion){
-                        if(aptoDiabetico){
-                            if(colacion.hc + hcPorCantidadExtra < maxHcColacion){
-                                extraValido = true
-                            }
-                        }else{
-                            extraValido = true
-                        }
-                    }
-
-                    //Elijo la colación extra
-                    if(extraValido){
-                        colacion.extra.descripcion = extraElegido.descripcion
-                        colacion.extra.kcal_unidad = kcalPorCantidadExtra
-                        colacion.extra.hc_unidad = hcPorCantidadExtra
-
-                        while(extraValido){
-                            extraValido = false
-                            colacion.extra.cantidades++
-                            colacion.kcal += kcalPorCantidadExtra
-                            colacion.hc += hcPorCantidadExtra
-
-                            if(colacion.kcal*100/maxKcalColacion < 80){
-                                if(aptoDiabetico){
-                                    if(colacion.hc*100/maxHcColacion < 80){
-                                        elegirExtra = true
-                                    }
-                                } else {
-                                    elegirExtra = true
-                                }
-                            }
-
-                            //Todavia se cumple la condición del 80%, 
-                            //verifico si puedo elegir de nuevo otra porción de extra
-                            if(elegirExtra){
-                                if(colacion.kcal + kcalPorCantidadExtra < maxKcalColacion){
-                                    if(aptoDiabetico){
-                                        if(colacion.hc + hcPorCantidadExtra < maxHcColacion){
-                                            extraValido = true
-                                        }
-                                    }else{
-                                        extraValido = true
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-    
-                console.log("colación elegida!")
-
-                /////////////////////////////////////////////////////////////////////////////////////
-                ///////////////////////////////// Almuerzo //////////////////////////////////////////
-                /////////////////////////////////////////////////////////////////////////////////////
-                let almuerzo = {
-                    id:1,
-                    type:"Almuerzo",
-                    maxKcal: maxKcalAlmuerzo,
-                    maxHC: maxHcAlmuerzo,
-                    kcal:0,
-                    hc: 0,
-                    receta:{
-                        descripcion:"",
-                        cantidades:0,
-                        url_imagen:""
-                    },
-                    bebida:{
-                        descripcion:"",
-                        cantidades: 1
-                    },
-                    extra:{
-                        descripcion:"",
-                        cantidades:0,
-                        kcal_unidad:0,
-                        hc_unidad:0
-                    }
-                }
-                let almuerzoIdx = -1
-                while(almuerzo.kcal === 0){
-                    almuerzoIdx = Math.floor(Math.random()*almuerzosCenas.length)
-                    let almuerzoElegido = almuerzosCenas[almuerzoIdx]
-                    kcalPorCantidad = (almuerzoElegido.total_kcal / almuerzoElegido.rendimiento)
-                    let hcPorCantidad = (almuerzoElegido.total_hc / almuerzoElegido.rendimiento)
-                    if(kcalPorCantidad < maxKcalAlmuerzo){
-                        let elegirComida = false
-                        if(aptoDiabetico){
-                            let hcPorCantidad = (almuerzoElegido.total_hc / almuerzoElegido.rendimiento)
-                            if(hcPorCantidad < maxHcAlmuerzo){
-                                elegirComida = true
-                            }
-                        } else {
-                            elegirComida = true
-                        }
-    
-                        if(elegirComida){
-                            almuerzo.receta.descripcion = almuerzoElegido.descripcion;
-                            almuerzo.kcal += kcalPorCantidad
-                            almuerzo.receta.cantidades++
-                            almuerzo.receta.url_imagen = almuerzoElegido.url_imagen
-                            almuerzo.hc += (almuerzoElegido.total_hc / almuerzoElegido.rendimiento)
-            
-                            let bebidaIdx = Math.floor(Math.random()*bebidasAlmuerzoCenas.length)
-                            let bebida = bebidasAlmuerzoCenas[bebidaIdx]
-                            almuerzo.bebida.descripcion = bebida.descripcion
-                            almuerzo.kcal += bebida.kcal
-                            almuerzo.hc += bebida.hc
-    
-                            let elegirOtraPorcion = false
-                            if((almuerzo.kcal + kcalPorCantidad) < maxKcalAlmuerzo){
-                                if(aptoDiabetico){
-                                    if(almuerzo.hc + hcPorCantidad < maxHcAlmuerzo){
-                                        elegirOtraPorcion = true
-                                    }                                
-                                } else{
-                                    elegirOtraPorcion = true
-                                }
-                            }
-            
-                            while(elegirOtraPorcion){
-                                elegirOtraPorcion = false
-                                almuerzo.kcal += kcalPorCantidad
-                                almuerzo.hc += (almuerzoElegido.total_hc / almuerzoElegido.rendimiento)
-                                almuerzo.receta.cantidades++
-    
-                                if((almuerzo.kcal + kcalPorCantidad) < maxKcalAlmuerzo){
-                                    if(aptoDiabetico){
-                                        if(almuerzo.hc + hcPorCantidad < maxHcAlmuerzo){
-                                            elegirOtraPorcion = true
-                                        }                                
-                                    } else {
-                                        elegirOtraPorcion = true
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                almuerzosCenas.splice(almuerzoIdx,1)
-
-                //Selección de alimento extra
-
-                //Si la cantidad de kcal o HC está por debajo de un 80%
-                //elijo algo de colación para sumar más kcal/hc y completar mejor las cantidades diarias
-                elegirExtra = false
-                if(almuerzo.kcal*100/maxKcalAlmuerzo < 80){
-                    if(aptoDiabetico){
-                        if(almuerzo.hc*100/maxHcAlmuerzo < 80){
-                            elegirExtra = true
-                        }
-                    } else {
-                        elegirExtra = true
-                    }
-                }
-
-                //Mientras se siga cumpliendo que no se alcanza al menos el 80% o alguna otra condiciones, sigo agregando extra
-                if(elegirExtra){
-                    elegirExtra = false
-                    let extraIdx = Math.floor(Math.random()*colaciones.length)
-                    let extraElegido = colaciones[extraIdx]
-                    let extraValido = false
-                    let kcalPorCantidadExtra = extraElegido.kcal * extraElegido.gr_unidad_media / 100
-                    let hcPorCantidadExtra = extraElegido.hc * extraElegido.gr_unidad_media / 100
-
-                    if(almuerzo.kcal + kcalPorCantidadExtra < maxKcalAlmuerzo){
-                        if(aptoDiabetico){
-                            if(almuerzo.hc + hcPorCantidadExtra < maxHcAlmuerzo){
-                                extraValido = true
-                            }
-                        }else{
-                            extraValido = true
-                        }
-                    }
-
-                    //Elijo la colación extra
-                    if(extraValido){
-                        almuerzo.extra.descripcion = extraElegido.descripcion
-                        almuerzo.extra.kcal_unidad = kcalPorCantidadExtra
-                        almuerzo.extra.hc_unidad = hcPorCantidadExtra
-
-                        while(extraValido){
-                            extraValido = false
-                            almuerzo.extra.cantidades++
-                            almuerzo.kcal += kcalPorCantidadExtra
-                            almuerzo.hc += hcPorCantidadExtra
-
-                            if(almuerzo.kcal*100/maxKcalAlmuerzo < 80){
-                                if(aptoDiabetico){
-                                    if(almuerzo.hc*100/maxHcAlmuerzo < 80){
-                                        elegirExtra = true
-                                    }
-                                } else {
-                                    elegirExtra = true
-                                }
-                            }
-
-                            //Todavia se cumple la condición del 80%, 
-                            //verifico si puedo elegir de nuevo otra porción de extra
-                            if(elegirExtra){
-                                if(almuerzo.kcal + kcalPorCantidadExtra < maxKcalAlmuerzo){
-                                    if(aptoDiabetico){
-                                        if(almuerzo.hc + hcPorCantidadExtra < maxHcAlmuerzo){
-                                            extraValido = true
-                                        }
-                                    }else{
-                                        extraValido = true
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                console.log("almuerzo elegida!")
-    
-                /////////////////////////////////////////////////////////////////////////////////////
-                ///////////////////////////////// Merienda //////////////////////////////////////////
-                /////////////////////////////////////////////////////////////////////////////////////
-                let merienda = {
-                    id:2,
-                    type:"Merienda",
-                    maxKcal: maxKcalMerienda,
-                    maxHC: maxHcMerienda,
-                    kcal:0,
-                    hc: 0,
-                    receta:{
-                        descripcion:"",
-                        cantidades:0,
-                        url_imagen:""
-                    },
-                    bebida:{
-                        descripcion:"",
-                        cantidades:1
-                    },
-                    extra:{
-                        descripcion:"",
-                        cantidades:0,
-                        kcal_unidad:0,
-                        hc_unidad:0
-                    }
-                }
-                let meriendaIdx = -1;
-                while(merienda.kcal === 0){
-                    meriendaIdx = Math.floor(Math.random()*desayunosMeriendas.length)
-                    let meriendaElegida = desayunosMeriendas[meriendaIdx]
-                    kcalPorCantidad = (meriendaElegida.total_kcal / meriendaElegida.rendimiento)
-                    let hcPorCantidad = (meriendaElegida.total_hc / meriendaElegida.rendimiento)
-    
-                    if(kcalPorCantidad < maxKcalMerienda){
-                        let elegirComida = false
-                        if(aptoDiabetico){
-                            console.log("merienda",hcPorCantidad,maxHcMerienda)
-                            if(hcPorCantidad < maxHcMerienda){
-                                elegirComida = true
-                            }
-                        } else {
-                            elegirComida = true
-                        }
-    
-                        if(elegirComida){
-                            merienda.receta.descripcion = meriendaElegida.descripcion;
-                            merienda.kcal += kcalPorCantidad
-                            merienda.receta.cantidades++
-                            merienda.receta.url_imagen = meriendaElegida.url_imagen
-                            merienda.hc += (meriendaElegida.total_hc / meriendaElegida.rendimiento)
-            
-                            let bebidaIdx = Math.floor(Math.random()*bebidasDesayunoMeriendas.length)
-                            let bebida = bebidasDesayunoMeriendas[bebidaIdx]
-                            merienda.bebida.descripcion = bebida.descripcion
-                            merienda.kcal += bebida.kcal
-                            merienda.hc += bebida.hc
-    
-                            let elegirOtraPorcion = false
-                            if((almuerzo.kcal + kcalPorCantidad) < maxKcalMerienda){
-                                if(aptoDiabetico){
-                                    if(almuerzo.hc + hcPorCantidad < maxHcMerienda){
-                                        elegirOtraPorcion = true
-                                    }                                
-                                }
-                            }
-            
-                            while(elegirOtraPorcion){
-                                elegirOtraPorcion = false
-                                merienda.kcal += kcalPorCantidad
-                                merienda.hc += (meriendaElegida.total_hc / meriendaElegida.rendimiento)
-                                merienda.receta.cantidades++
-    
-                                if((almuerzo.kcal + kcalPorCantidad) < maxKcalMerienda){
-                                    if(aptoDiabetico){
-                                        if(almuerzo.hc + hcPorCantidad < maxHcMerienda){
-                                            elegirOtraPorcion = true
-                                        }                                
-                                    } else {
-                                        elegirOtraPorcion = true
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                desayunosMeriendas.splice(meriendaIdx,1)
-
-                //Selección de alimento extra
-
-                //Si la cantidad de kcal o HC está por debajo de un 80%
-                //elijo algo de colación para sumar más kcal/hc y completar mejor las cantidades diarias
-                elegirExtra = false
-                if(merienda.kcal*100/maxKcalMerienda < 80){
-                    if(aptoDiabetico){
-                        if(merienda.hc*100/maxHcMerienda < 80){
-                            elegirExtra = true
-                        }
-                    } else {
-                        elegirExtra = true
-                    }
-                }
-
-                //Mientras se siga cumpliendo que no se alcanza al menos el 80% o alguna otra condiciones, sigo agregando extra
-                if(elegirExtra){
-                    elegirExtra = false
-                    let extraIdx = Math.floor(Math.random()*colaciones.length)
-                    let extraElegido = colaciones[extraIdx]
-                    let extraValido = false
-                    let kcalPorCantidadExtra = extraElegido.kcal * extraElegido.gr_unidad_media / 100
-                    let hcPorCantidadExtra = extraElegido.hc * extraElegido.gr_unidad_media / 100
-
-                    if(merienda.kcal + kcalPorCantidadExtra < maxKcalMerienda){
-                        if(aptoDiabetico){
-                            if(merienda.hc + hcPorCantidadExtra < maxHcMerienda){
-                                extraValido = true
-                            }
-                        }else{
-                            extraValido = true
-                        }
-                    }
-
-                    //Elijo la colación extra
-                    if(extraValido){
-                        merienda.extra.descripcion = extraElegido.descripcion
-                        merienda.extra.kcal_unidad = kcalPorCantidadExtra
-                        merienda.extra.hc_unidad = hcPorCantidadExtra
-
-                        while(extraValido){
-                            extraValido = false
-                            merienda.extra.cantidades++
-                            merienda.kcal += kcalPorCantidadExtra
-                            merienda.hc += hcPorCantidadExtra
-
-                            if(merienda.kcal*100/maxKcalMerienda < 80){
-                                if(aptoDiabetico){
-                                    if(merienda.hc*100/maxHcMerienda < 80){
-                                        elegirExtra = true
-                                    }
-                                } else {
-                                    elegirExtra = true
-                                }
-                            }
-
-                            //Todavia se cumple la condición del 80%, 
-                            //verifico si puedo elegir de nuevo otra porción de extra
-                            if(elegirExtra){
-                                if(merienda.kcal + kcalPorCantidadExtra < maxKcalMerienda){
-                                    if(aptoDiabetico){
-                                        if(merienda.hc + hcPorCantidadExtra < maxHcDesayuno){
-                                            extraValido = true
-                                        }
-                                    }else{
-                                        extraValido = true
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                console.log("merienda elegida!")
-    
-                /////////////////////////////////////////////////////////////////////////////////////
-                ///////////////////////////////// Cena //////////////////////////////////////////
-                /////////////////////////////////////////////////////////////////////////////////////
-                let cena = {
-                    id:3,
-                    type:"Cena",
-                    maxKcal:maxKcalCena,
-                    maxHC:maxHcCena,
-                    kcal:0,
-                    hc: 0,
-                    receta:{
-                        descripcion:"",
-                        cantidades:0,
-                        url_imagen:""
-                    },
-                    bebida:{
-                        descripcion:"",
-                        cantidades:1
-                    },
-                    extra:{
-                        descripcion:"",
-                        cantidades:0,
-                        kcal_unidad:0,
-                        hc_unidad:0
-                    }
-                }
-                let cenaIdx = -1
-                while(cena.kcal === 0){
-                    cenaIdx = Math.floor(Math.random()*almuerzosCenas.length)
-                    let cenaElegida = almuerzosCenas[cenaIdx]
-                    kcalPorCantidad = (cenaElegida.total_kcal / cenaElegida.rendimiento)
-                    let hcPorCantidad = (cenaElegida.total_hc / cenaElegida.rendimiento)
-    
-                    if(kcalPorCantidad < maxKcalCena){
-                        let elegirComida = false
-                        if(aptoDiabetico){
-                            let hcPorCantidad = (cenaElegida.total_hc / cenaElegida.rendimiento)
-                            if(hcPorCantidad < maxHcCena){
-                                elegirComida = true
-                            }
-                        } else {
-                            elegirComida = true
-                        }
-    
-                        if(elegirComida){
-                            cena.receta.descripcion = cenaElegida.descripcion;
-                            cena.kcal += kcalPorCantidad
-                            cena.receta.cantidades++
-                            cena.receta.url_imagen = cenaElegida.url_imagen
-                            cena.hc += (cenaElegida.total_hc / cenaElegida.rendimiento)
-            
-                            let bebidaIdx = Math.floor(Math.random()*bebidasAlmuerzoCenas.length)
-                            let bebida = bebidasAlmuerzoCenas[bebidaIdx]
-                            cena.bebida.descripcion = bebida.descripcion
-                            cena.kcal += bebida.kcal
-                            cena.hc += bebida.hc
-    
-                            let elegirOtraPorcion = false
-                            if((cena.kcal + kcalPorCantidad) < maxKcalCena){
-                                if(aptoDiabetico){
-                                    if(cena.hc + hcPorCantidad < maxHcCena){
-                                        elegirOtraPorcion = true
-                                    }                                
-                                } else {
-                                    elegirOtraPorcion = true
-                                }
-                            }
-            
-                            while(elegirOtraPorcion){
-                                elegirOtraPorcion = false
-                                cena.kcal += kcalPorCantidad
-                                cena.hc += (cenaElegida.total_hc / cenaElegida.rendimiento)
-                                cena.receta.cantidades++
-    
-                                if((cena.kcal + kcalPorCantidad) < maxKcalCena){
-                                    if(aptoDiabetico){
-                                        if(cena.hc + hcPorCantidad < maxHcCena){
-                                            elegirOtraPorcion = true
-                                        }                                
-                                    } else {
-                                        elegirOtraPorcion = true
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                almuerzosCenas.splice(cenaIdx,1)
-
-                //Selección de alimento extra
-
-                //Si la cantidad de kcal o HC está por debajo de un 80%
-                //elijo algo de colación para sumar más kcal/hc y completar mejor las cantidades diarias
-                elegirExtra = false
-                if(cena.kcal*100/maxKcalCena < 80){
-                    if(aptoDiabetico){
-                        if(cena.hc*100/maxHcCena < 80){
-                            elegirExtra = true
-                        }
-                    } else {
-                        elegirExtra = true
-                    }
-                }
-
-                //Mientras se siga cumpliendo que no se alcanza al menos el 80% o alguna otra condiciones, sigo agregando extra
-                if(elegirExtra){
-                    elegirExtra = false
-                    let extraIdx = Math.floor(Math.random()*colaciones.length)
-                    let extraElegido = colaciones[extraIdx]
-                    let extraValido = false
-                    let kcalPorCantidadExtra = extraElegido.kcal * extraElegido.gr_unidad_media / 100
-                    let hcPorCantidadExtra = extraElegido.hc * extraElegido.gr_unidad_media / 100
-
-                    if(cena.kcal + kcalPorCantidadExtra < maxKcalCena){
-                        if(aptoDiabetico){
-                            if(cena.hc + hcPorCantidadExtra < maxHcCena){
-                                extraValido = true
-                            }
-                        }else{
-                            extraValido = true
-                        }
-                    }
-
-                    //Elijo la colación extra
-                    if(extraValido){
-                        cena.extra.descripcion = extraElegido.descripcion
-                        cena.extra.kcal_unidad = kcalPorCantidadExtra
-                        cena.extra.hc_unidad = hcPorCantidadExtra
-
-                        while(extraValido){
-                            extraValido = false
-                            cena.extra.cantidades++
-                            cena.kcal += kcalPorCantidadExtra
-                            cena.hc += hcPorCantidadExtra
-
-                            if(cena.kcal*100/maxKcalColacion < 80){
-                                if(aptoDiabetico){
-                                    if(cena.hc*100/maxHcDesayuno < 80){
-                                        elegirExtra = true
-                                    }
-                                } else {
-                                    elegirExtra = true
-                                }
-                            }
-
-                            //Todavia se cumple la condición del 80%, 
-                            //verifico si puedo elegir de nuevo otra porción de extra
-                            if(elegirExtra){
-                                if(cena.kcal + kcalPorCantidadExtra < maxKcalCena){
-                                    if(aptoDiabetico){
-                                        if(cena.hc + hcPorCantidadExtra < maxHcCena){
-                                            extraValido = true
-                                        }
-                                    }else{
-                                        extraValido = true
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                console.log("cena elegida!")
-
-            
-                let plan = [
-                    desayuno,
-                    colacion,
-                    almuerzo,
-                    merienda,
-                    cena
-                ]
-                console.log(plan)
-                console.log(`Total KCAL: ${desayuno.kcal + colacion.kcal + almuerzo.kcal + merienda.kcal + cena.kcal} - Total HC: ${desayuno.hc + colacion.hc + almuerzo.hc + merienda.hc + cena.hc}`)
-                res.send(plan)
-            } else { 
-                res.send([])
-            }
-            
+            let plan = planesDietarioUtils.getPlanDietarioDiario(aptoObesidad, aptoDiabetico, aptoCeliaco, results, colaciones, bebidasDesayunoMeriendas, bebidasAlmuerzoCenas, informacionNutricional, gramosUnidadProducto)
+            res.send(plan)
         })
     } else {
         res.send([])
@@ -1195,6 +322,415 @@ app.get('/plan',(req,res) =>{
 
 })
 
+//plan semanal
+app.get('/generate_plan_semanal',  (req,res) => {
+    let aptoCeliaco = false;
+    let aptoDiabetico = false
+    let aptoDiabetico1 = false
+    let aptoDiabetico2 = false
+    let aptoObesidad = false;
+
+    if(req.query.aptoCeliaco != undefined){
+        if(req.query.aptoCeliaco == 'true'){
+            aptoCeliaco = true
+        }
+    }
+
+    if(req.query.aptoDiabetico1 != undefined){
+        if(req.query.aptoDiabetico1 == 'true'){
+            aptoDiabetico1 = true
+        }
+    }
+
+    if(req.query.aptoDiabetico2 != undefined){
+        if(req.query.aptoDiabetico2 == 'true'){
+            aptoDiabetico2 = true
+        }
+    }
+
+    if(req.query.aptoObesidad != undefined){
+        if(req.query.aptoObesidad == 'true'){
+            aptoObesidad = true
+        }
+    }
+
+    aptoDiabetico = aptoDiabetico1 || aptoDiabetico2
+
+    console.log(`Plan dietario params: aptoCeliaco: ${aptoCeliaco}; aptoDiabetico: ${aptoDiabetico}; aptoObesidad: ${aptoObesidad};`)
+
+    let sqlRecetas = ""
+    let sqlColaciones = ""
+    let sqlBebidas = ""
+    let sqlInfoNutricional = "SELECT * FROM infonutricional"
+    let sqlProductosGramosUnidad = "SELECT * FROM productos_gramos_x_unidad"
+
+    if(aptoCeliaco && aptoDiabetico){
+        sqlRecetas = `SELECT * FROM platos WHERE Celiquia=${aptoCeliaco} AND Tipo1=${aptoDiabetico}`
+        sqlBebidas = `SELECT * FROM productos WHERE Celiquia=${aptoCeliaco} AND Tipo1=${aptoDiabetico} AND Tipo_Producto = 'Bebidas'`
+        sqlColaciones = `SELECT * FROM productos WHERE Celiquia=${aptoCeliaco} AND Tipo1=${aptoDiabetico} AND Tipo_Comida = 'Colación'`
+    } else {
+        if(aptoCeliaco){
+            sqlRecetas = `SELECT * FROM platos WHERE Celiquia=${aptoCeliaco}`
+            sqlBebidas = `SELECT * FROM productos WHERE Tipo_Producto = 'Bebidas' AND Celiquia=${aptoCeliaco}`
+            sqlColaciones = `SELECT * FROM productos WHERE Celiquia=${aptoCeliaco} AND Tipo_Comida='Colación'`
+        } else{
+            if(aptoDiabetico){
+                sqlRecetas = `SELECT * FROM platos WHERE Tipo1=${aptoDiabetico}`
+                sqlBebidas = `SELECT * FROM productos WHERE Tipo1=${aptoDiabetico} AND Tipo_Producto = 'Bebidas'`
+                sqlColaciones = `SELECT * FROM productos WHERE Tipo1=${aptoDiabetico} AND Tipo_Comida='Colación'`
+            } else {
+                if(aptoObesidad){
+                    sqlRecetas = `SELECT * FROM platos`
+                    sqlBebidas = `SELECT * FROM productos WHERE Tipo_Producto = 'Bebidas'`
+                    sqlColaciones = `SELECT * FROM productos WHERE Tipo_Comida='Colación'`
+                }
+            }
+        }
+    } 
+    
+    let bebidasDesayunoMeriendas = [];
+    let bebidasAlmuerzoCenas = [];
+    let colaciones = [];
+    let informacionNutricional = [];
+    let gramosUnidadProducto = [];
+    console.log("Query bebidas:",sqlBebidas)
+    console.log("Query colaciones:",sqlColaciones)
+    console.log("Query recetas:",sqlRecetas)
+
+    if(sqlBebidas != "" && sqlColaciones != "" && sqlRecetas != ""){
+        connection.query(sqlInfoNutricional,(error, results) =>{
+            if(error) throw error;
+            if(results != undefined && results.length > 0){
+                informacionNutricional = results
+            }
+        })
+
+        connection.query(sqlProductosGramosUnidad,(error, results) =>{
+            if(error) throw error;
+            if(results != undefined && results.length > 0){
+                gramosUnidadProducto = results
+            }
+        })
+
+        connection.query(sqlBebidas,(error, results) =>{
+            if(error) throw error;
+            if(results != undefined && results.length > 0){
+                bebidasDesayunoMeriendas = results.filter((e) => e.Tipo_Comida === "Desayuno/Merienda")
+                bebidasAlmuerzoCenas = results.filter((e) => e.Tipo_Comida === "Almuerzo/Cena")
+            }
+        })
+        connection.query(sqlColaciones,(error, results) =>{
+            colaciones = results
+        }) 
+    
+        connection.query(sqlRecetas,(error, results) =>{
+            //TODO: 
+            //Ver opciones de postre.
+            //En caso de resto, sumar una porción más de almuerzo/cena
+    
+            if(error) throw error;
+            let plan = planesDietarioUtils.getPlanDietarioSemanal(aptoObesidad, aptoDiabetico, aptoCeliaco, results, colaciones, bebidasDesayunoMeriendas, bebidasAlmuerzoCenas, informacionNutricional, gramosUnidadProducto)
+            res.send(plan)
+        })
+    } else {
+        res.send([])
+    }
+})
+
+const getColacionComida = async function(resultPlan){
+    return new Promise((resolve, reject) => {
+        //Busco producto
+        let sqlComidaProducto = `SELECT * FROM planes_diarios_comidas_productos WHERE id_plan_diario_comida = ${resultPlan.id_plan_diario_comida} AND tipo = 'Colación'` 
+        connection.query(sqlComidaProducto, (error, resultComidaProducto) => {
+            if(error) throw reject(error);
+            resolve (resultComidaProducto[0])
+        })
+    }).then(function(result){
+        return getProducto(result)
+    })
+}
+
+const getExtraComida = async function(resultPlan){
+    return new Promise((resolve, reject) => {
+        //Busco producto
+        let sqlComidaProducto = `SELECT * FROM planes_diarios_comidas_productos WHERE id_plan_diario_comida = ${resultPlan.id_plan_diario_comida} AND tipo = 'Extra'` 
+        connection.query(sqlComidaProducto, (error, resultComidaProducto) => {
+            if(error) throw reject(error);
+            resolve (resultComidaProducto[0])
+        })
+    }).then(function(result){
+        return getProducto(result)
+    })
+}
+
+const getBebidaComida = async function(resultPlan){
+    return new Promise((resolve, reject) => {
+        //Busco producto
+        let sqlComidaProducto = `SELECT * FROM planes_diarios_comidas_productos WHERE id_plan_diario_comida = ${resultPlan.id_plan_diario_comida} AND tipo = 'Bebida'` 
+        connection.query(sqlComidaProducto, (error, resultComidaProducto) => {
+            if(error) throw reject(error);
+            resolve (resultComidaProducto[0])
+        })
+    }).then(function(result){
+        return getProducto(result)
+    })
+}
+
+const getProductoComida = async function(resultPlan){
+    return new Promise((resolve, reject) => {
+        //Busco producto
+        let sqlComidaProducto = `SELECT * FROM planes_diarios_comidas_productos WHERE id_plan_diario_comida = ${resultPlan.id_plan_diario_comida}` 
+        connection.query(sqlComidaProducto, (error, resultComidaProducto) => {
+            if(error) throw reject(error);
+            resolve (resultComidaProducto[0])
+        })
+    }).then(function(result){
+        return getProducto(result)
+    })
+}
+
+const getProducto = async function(resultComidaProducto){
+    return new Promise((resolve, reject) => {
+        let sqlProducto = `SELECT * FROM productos WHERE ID = ${resultComidaProducto.id_producto}`
+        connection.query(sqlProducto, (error, resultProducto) => {
+            if(error) throw reject(error);
+            resolve({
+                ...resultProducto[0],
+                cantidades:resultComidaProducto.cantidad
+            })
+        })
+    }).then(function(result){
+        return getProductoInfoNutricional(result)
+    })
+}
+
+const getProductoInfoNutricional = async function(result){
+    return new Promise((resolve, reject) => {
+        let sqlProducto = `SELECT * FROM infonutricional WHERE Producto = ${result.ID}`
+        connection.query(sqlProducto, (error, resultInfoNutricional) => {
+            if(error) throw reject(error);
+            resolve({
+                ...result,
+                ...resultInfoNutricional[0],
+                cantidades:result.cantidad,
+                kcal: resultInfoNutricional.find((e) => e.Nombre == 'Kcal').Cantidad,
+                hc: resultInfoNutricional.find((e) => e.Nombre == 'CH').Cantidad,
+            })
+        })
+    })
+}
+
+const getRecetaComida = async function(resultPlan){
+    return new Promise((resolve, reject) => {
+        let sqlComidaReceta = `SELECT * FROM planes_diarios_comidas_recetas WHERE id_plan_diario_comida = ${resultPlan.id_plan_diario_comida}` 
+        connection.query(sqlComidaReceta, (error, resultComidaReceta) => {
+            if(error) throw reject(error);
+            resolve(resultComidaReceta[0])
+        })
+    }).then(function(result){
+        return getReceta(result);
+    })
+}
+
+const getReceta = async function(resultComidaReceta){
+    return new Promise((resolve, reject) => {
+        let sqlReceta = `SELECT * FROM platos WHERE ID = ${resultComidaReceta.id_receta}`
+        connection.query(sqlReceta, (error, resultReceta) => {
+            if(error) throw reject(error);
+            resolve({
+                ...resultReceta[0],
+                cantidades:resultComidaReceta.cantidad
+            })
+        })
+    })
+}
+
+
+//get plan semanal
+app.get('/plan_semanal', async (req, res) => {
+    let idPlan = req.query.id_plan;
+    let sqlPlan = `SELECT * FROM planes_semanales PS
+    INNER JOIN planes_diarios PD ON PS.id_plan_semanal = PD.id_plan_semanal
+    INNER JOIN planes_diarios_comidas PDC ON PDC.id_plan_diario = PD.id_plan_diario
+    WHERE PS.id_plan_semanal = ${idPlan}`
+
+    connection.query(sqlPlan, async (error, resultPlan) => {
+
+        let result = [];
+        let idx = 0;
+        let currentDia = 0;
+
+        while (idx < resultPlan.length - 1){
+            result[currentDia] = []
+            while (idx < resultPlan.length - 1 && resultPlan[idx].dia == currentDia){
+                let receta = {};
+                let bebida = {};
+                let extra = {};
+                if(resultPlan[idx].tipo != 'Colación'){
+                    //Busco receta
+                    let result = await getRecetaComida(resultPlan[idx])
+                    console.log("rec", result)
+                    receta.ID = result.ID,
+                    receta.descripcion = result.Nombre,
+                    receta.url_imagen = result.Foto,
+                    receta.kcal = result.Kcal,
+                    receta.hc = result.CH,
+                    receta.cantidades = result.cantidades
+
+                    let bebidaResult = await getBebidaComida(resultPlan[idx]);
+                    bebida.ID = bebidaResult.ID,
+                    bebida.descripcion = bebidaResult.Descripcion,
+                    bebida.url_imagen = bebidaResult.Foto,
+                    bebida.kcal = bebidaResult.kcal,
+                    bebida.hc = bebidaResult.hc,
+                    bebida.cantidades = bebidaResult.cantidades
+                } else {
+                   let result = await getColacionComida(resultPlan[idx]);
+                   receta.ID = result.ID,
+                   receta.descripcion = result.Descripcion,
+                   receta.url_imagen = result.Foto,
+                   receta.kcal = result.kcal,
+                   receta.hc = result.hc
+                   receta.cantidades = result.cantidades
+
+                   let bebidaResult = await getBebidaComida(resultPlan[idx]);
+                    bebida.ID = bebidaResult.ID,
+                    bebida.descripcion = bebidaResult.Descripcion,
+                    bebida.url_imagen = bebidaResult.Foto,
+                    bebida.kcal = bebidaResult.kcal,
+                    bebida.hc = bebidaResult.hc,
+                    bebida.cantidades = bebidaResult.cantidades
+                }
+                result[currentDia].push(
+                    {
+                        dia: currentDia,
+                        type: resultPlan[idx].tipo,
+                        kcal: resultPlan[idx].kcal,
+                        hc: resultPlan[idx].hc,
+                        receta: receta,
+                        bebida: bebida,
+                        extra: extra
+                    }
+                )
+                idx = idx + 1
+            }
+            if(currentDia < 7){
+                currentDia = currentDia + 1
+            } else {
+                currentDia = 0
+            }
+        }
+        res.send(result)
+    })
+})
+
+//save plan semanal
+app.post('/plan_semanal',(req, res) => {
+    let idUsuario = req.body.id_usuario;
+    let planElegido = req.body.plan;
+
+    let sqlPlanesSemanales = `INSERT INTO planes_semanales SET ?`
+    const newPlanSemanal = {
+        id_usuario: idUsuario,
+        nombre: "myPlanSemanal"
+    }
+
+    connection.query(sqlPlanesSemanales,newPlanSemanal, (error, resultPlanSemanal) => {
+        if(error) throw error;
+
+        let idPlanSemanal = resultPlanSemanal.insertId
+
+        planElegido.forEach((e, idx) => {
+            let sqlPlanDiario = `INSERT INTO planes_diarios SET ?`
+            const newPlanDiario = {
+                id_plan_semanal: idPlanSemanal,
+                dia: idx
+            }
+
+            connection.query(sqlPlanDiario, newPlanDiario, (error, resultPlanDiario) => {
+                if(error) throw error;
+                let idPlanDiario = resultPlanDiario.insertId;
+
+                let sqlPlanDiarioComida = `INSERT INTO planes_diarios_comidas SET ?`
+                e.forEach((c,idx) => {
+                    const newComidaPlanDiario = {
+                        id_plan_diario: idPlanDiario,
+                        tipo: c.type,
+                        kcal: c.kcal,
+                        hc: c.hc
+                    }
+    
+                    connection.query(sqlPlanDiarioComida, newComidaPlanDiario, (error, resultPlanDiario) => {
+                        if(error) throw error;
+                        let idComidaPlanDiario = resultPlanDiario.insertId;
+                        
+                        //Insert a Comida-Receta
+                        if(c.type != 'Colación'){
+                            let sqlComidaReceta = 'INSERT INTO planes_diarios_comidas_recetas SET ?'
+                            const comidaReceta = {
+                                id_plan_diario_comida: idComidaPlanDiario,
+                                id_receta: c.receta.ID,
+                                cantidad: c.receta.cantidades
+                            }
+                            connection.query(sqlComidaReceta, comidaReceta, (error, resultComidaReceta) => {
+                            })
+                        } else {
+                            let sqlComidaProducto = 'INSERT INTO planes_diarios_comidas_productos SET ?'
+                            const comidaProducto = {
+                                id_plan_diario_comida: idComidaPlanDiario,
+                                id_producto: c.receta.ID,
+                                tipo:"Colación",
+                                cantidad: c.receta.cantidades
+                            }
+                            connection.query(sqlComidaProducto, comidaProducto, (error, resultComidaReceta) => {
+                            })
+                        }
+
+                        //Insert a Bebida Comida-Producto
+                        if(c.bebida != undefined){
+                            let sqlComidaProducto = 'INSERT INTO planes_diarios_comidas_productos SET ?'
+                            const comidaProducto = {
+                                id_plan_diario_comida: idComidaPlanDiario,
+                                id_producto: c.bebida.ID,
+                                tipo:"Bebida",
+                                cantidad: c.bebida.cantidades
+                            }
+                            connection.query(sqlComidaProducto, comidaProducto, (error, resultComidaReceta) => {
+                            })
+                        }
+
+                        if(c.extra.ID != undefined){
+                            let sqlComidaProducto = 'INSERT INTO planes_diarios_comidas_productos SET ?'
+                            const comidaProducto = {
+                                id_plan_diario_comida: idComidaPlanDiario,
+                                id_producto: c.extra.ID,
+                                tipo:"Extra",
+                                cantidad: c.extra.cantidades
+                            }
+                            connection.query(sqlComidaProducto, comidaProducto, (error, resultComidaReceta) => {
+                            })
+                        }
+                    })
+                })
+            })
+        })
+    })
+    
+    res.send("faaa")
+})
+
+//my planes
+app.get('/mis_planes', (req,res) => {
+    let idUsuario = req.query.id_usuario;
+
+    let sqlMyPlans = `SELECT * FROM planes_semanales WHERE id_usuario = ${idUsuario}`
+
+    connection.query(sqlMyPlans, (error, resultMyPlans) => {
+        if(error) throw error;
+        console.log(resultMyPlans)
+        res.send(resultMyPlans)
+    })
+})
 
 
 connection.connect(function(error){
