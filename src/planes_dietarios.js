@@ -114,7 +114,7 @@ let getPlanDietarioDiario = function(aptoObesidad, aptoDiabetico, aptoCeliaco, r
                     desayuno.hc += hcPorCantidad
                     desayuno.receta.cantidades++
                     desayuno.receta.url_imagen = desayunoElegido.Foto
-    
+
                     let bebidaIdx = Math.floor(Math.random()*bebidasDesayunoMeriendas.length)
                     let bebida = bebidasDesayunoMeriendas[bebidaIdx]
                     desayuno.bebida.ID = bebida.ID

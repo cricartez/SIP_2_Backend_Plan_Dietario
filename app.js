@@ -11,7 +11,7 @@ app.use(bodyParser.json());
 
 var connection = mysql.createConnection({
     host:"localhost",
-    database:"sip_2_kenobi",
+    database:"sip_2",
     user:"root",
     password:"root"
 });
@@ -571,7 +571,7 @@ app.get('/plan_semanal', async (req, res) => {
                     let result = await getRecetaComida(resultPlan[idx])
                     console.log("rec", result)
                     receta.ID = result.ID,
-                    receta.descripcion = result.Nombre,
+                    receta.descripcion = result.Descripcion,
                     receta.url_imagen = result.Foto,
                     receta.kcal = result.Kcal,
                     receta.hc = result.CH,
