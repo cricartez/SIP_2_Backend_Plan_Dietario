@@ -719,6 +719,59 @@ app.post('/plan_semanal',(req, res) => {
     res.send("faaa")
 })
 
+app.delete('/plan_semanal', (req, res) => {
+    let idPlan = req.query.id_plan;
+
+    let sqlDelete = `
+    DELETE FROM sip_2.planes_diarios_comidas_recetas
+    WHERE id_plan_diario_comida IN (SELECT PDC.id_plan_diario_comida FROM sip_2.planes_diarios_comidas PDC
+    WHERE id_plan_diario IN (SELECT PD.id_plan_diario FROM sip_2.planes_semanales PS
+    INNER JOIN sip_2.planes_diarios PD ON PS.id_plan_semanal = PD.id_plan_semanal
+    WHERE PS.id_plan_semanal = ${idPlan}));`
+    connection.query(sqlDelete, (error, result) => {
+        if(error) throw error;
+    })
+
+
+    sqlDelete = `
+    DELETE FROM sip_2.planes_diarios_comidas_productos
+    WHERE id_plan_diario_comida IN (SELECT PDC.id_plan_diario_comida FROM sip_2.planes_diarios_comidas PDC
+    WHERE id_plan_diario IN (SELECT PD.id_plan_diario FROM sip_2.planes_semanales PS
+    INNER JOIN sip_2.planes_diarios PD ON PS.id_plan_semanal = PD.id_plan_semanal
+    WHERE PS.id_plan_semanal = ${idPlan}));`
+    connection.query(sqlDelete, (error, result) => {
+        if(error) throw error;
+    })
+
+    sqlDelete = `
+    DELETE FROM sip_2.planes_diarios_comidas PDC
+    WHERE id_plan_diario IN (SELECT PD.id_plan_diario FROM sip_2.planes_semanales PS
+    INNER JOIN sip_2.planes_diarios PD ON PS.id_plan_semanal = PD.id_plan_semanal
+    WHERE PS.id_plan_semanal = ${idPlan})`
+    connection.query(sqlDelete, (error, result) => {
+        if(error) throw error;
+    })
+
+
+
+    sqlDelete = `DELETE FROM sip_2.planes_diarios_comidas PDC
+    WHERE id_plan_diario IN (SELECT PD.id_plan_diario FROM sip_2.planes_semanales PS
+    INNER JOIN sip_2.planes_diarios PD ON PS.id_plan_semanal = PD.id_plan_semanal
+    WHERE PS.id_plan_semanal = ${idPlan})`
+    connection.query(sqlDelete, (error, result) => {
+        if(error) throw error;
+    })
+
+    sqlDelete = `DELETE FROM sip_2.planes_semanales PS
+    WHERE PS.id_plan_semanal = ${idPlan};`
+    connection.query(sqlDelete, (error, result) => {
+        if(error) throw error;
+    })
+
+    res.status("Plan eliminado")
+
+})
+
 //my planes
 app.get('/mis_planes', (req,res) => {
     let idUsuario = req.query.id_usuario;
