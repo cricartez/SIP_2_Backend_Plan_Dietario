@@ -752,12 +752,17 @@ app.delete('/plan_semanal', (req, res) => {
         if(error) throw error;
     })
 
-
-
-    sqlDelete = `DELETE FROM sip_2.planes_diarios_comidas PDC
+    sqlDelete = `
+    DELETE FROM sip_2.planes_diarios_comidas PDC
     WHERE id_plan_diario IN (SELECT PD.id_plan_diario FROM sip_2.planes_semanales PS
     INNER JOIN sip_2.planes_diarios PD ON PS.id_plan_semanal = PD.id_plan_semanal
     WHERE PS.id_plan_semanal = ${idPlan})`
+    connection.query(sqlDelete, (error, result) => {
+        if(error) throw error;
+    })
+
+    sqlDelete = `DELETE FROM sip_2.planes_diarios PD
+    WHERE PD.id_plan_semanal = ${idPlan};`
     connection.query(sqlDelete, (error, result) => {
         if(error) throw error;
     })
@@ -768,7 +773,7 @@ app.delete('/plan_semanal', (req, res) => {
         if(error) throw error;
     })
 
-    res.status("Plan eliminado")
+    res.send("Plan eliminado")
 
 })
 
